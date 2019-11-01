@@ -1,0 +1,46 @@
+def run_event_study(signals, historical_prices, periods=[1,2,3], per_asset=True, cumulative=False, vol_adjusted=False):
+    forward_prices = historical_prices.close
+    
+    average_total_forward_returns = pd.Series()
+    average_forward_returns = pd.Series()
+    for period in periods:
+        if cumulative:
+            average_total_returns = forward_prices.pct_change(period).shift(-period).mean()
+            average_returns = forward_prices.pct_change(period).shift(-period)[signals].mean()
+            if vol_adjusted:
+                average_total_returns /= forward_prices.pct_change(period).shift(-period).std()
+                average_returns /= forward_prices.pct_change(period).shift(-period)[signals].std()
+        else:
+            average_total_returns = forward_prices.pct_change(1).shift(-period).mean()
+            average_returns = forward_prices.pct_change(1).shift(-period)[signals].mean()
+            if vol_adjusted:
+                average_total_returns /= forward_prices.pct_change(1).shift(-period).std()
+                average_returns /= forward_prices.pct_change(1).shift(-period)[signals].std()
+
+        if not per_asset:
+            average_total_returns = pd.Series(average_total_returns.mean(), index=average_total_returns.index)
+            average_returns = pd.Series(average_returns.mean(), index=average_returns.index)
+            
+        average_total_forward_returns = average_total_forward_returns.append(average_total_returns)
+        average_forward_returns = average_forward_returns.append(average_returns)
+    
+    import matplotlib.pyplot as plt
+#     plt.axhline(y=0.0, linestyle='-.')
+    
+    if per_asset:
+        for symbol in np.unique(average_forward_returns.index.values):
+            average_forward_returns.loc[symbol].plot(figsize=(5,5), label=symbol)
+            average_total_forward_returns.loc[symbol].plot(figsize=(5,5), style='*', label=symbol)
+            if average_forward_returns.loc[symbol].values[-1] > 0.001:
+                print(symbol)
+#             plt.plot(average_forward_returns.loc[symbol], label=symbol)
+#             plt.plot(average_total_forward_returns.loc[symbol], label=symbol, style="*")
+    else:
+        first_symbol = average_forward_returns.index.values[-1]
+        average_forward_returns.loc[first_symbol].plot(figsize=(5,5))
+        average_total_forward_returns.loc[first_symbol].plot(figsize=(5,5), style='*')
+        
+    plt.legend(bbox_to_anchor=(1.5, 1), loc='upper right', ncol=1)
+    plt.rc('grid', linestyle="dashed", color='black')
+    plt.grid(True)
+    plt.show()
