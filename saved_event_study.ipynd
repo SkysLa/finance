@@ -41,6 +41,7 @@ def run_event_study(signals, historical_prices, periods=[1,2,3], per_asset=True,
         average_total_forward_returns.loc[first_symbol].plot(figsize=(5,5), style='*')
     
     #test
+    #test2
     plt.legend(bbox_to_anchor=(1.5, 1), loc='upper right', ncol=1)
     plt.rc('grid', linestyle="dashed", color='black')
     plt.grid(True)
