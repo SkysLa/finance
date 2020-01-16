@@ -1,0 +1,192 @@
+def generate_momo_signals(data_source_df, reverse_symbols=[], short_length=[1], long_length=list(range(5, 100, 10)), zscore_cutoffs=[1]):
+    momo_price_dfs = {}
+    for length in np.unique(short_length + long_length):
+        momo_price_dfs[length] = data_source_df.rolling(length).mean().dropna(how='all')
+        
+    signals = {}
+    for short in short_length:
+        for long in long_length:
+            if 2*short > long: # this is to avoid silly combos
+                continue
+                
+#             signal = data_source_df * skew * np.sign(skew)
+#             signal = rolling_mean_dfs[long]
+#             signal = rolling_mean_dfs[long] * rolling_std_dfs[long]
+#             signal = rolling_mean_dfs[long] / rolling_std_dfs[long]
+#             signal = rolling_std_dfs[long]
+#             signal = np.abs(signal)
+
+#             signal = (rolling_mean_dfs[short] - rolling_mean_dfs[long]) / rolling_std_dfs[long]
+            signal = 100 * momo_price_dfs[long] / momo_price_dfs[long].shift(5)
+    
+            signal = signal[signal > 100]
+            signal = ~np.isnan(signal)
+#             signal = signal * (np.abs(signal) < 2).astype(int)
+    
+#             signal = (signal.stack(level=0).unstack(level=0) - signal.stack(level=0).unstack(level=0).mean()) / signal.stack(level=0).unstack(level=0).std()
+#             signal = signal.rank(method='min', ascending=True)
+#             signal = signal.stack(level=0).unstack(level=0)
+#             signal = signal * (rolling_skew_dfs[long] > 0).astype(int)
+#             signal = np.abs(signal)
+                
+            for cutoff in zscore_cutoffs:
+                signals['short={},long={},cutoff={}'.format(short, long, cutoff)] = signal
+    return signals
+
+def calculate_factor_quantiles(signals, historical_prices, quantiles=5, reverse_symbols=[], periods=[1,2,3]):
+    metrics = {}
+    for period in periods:
+        forward_returns = historical_prices.pct_change(period).shift(-period).close
+        forward_average_returns = forward_returns.mean()
+        for key, signal in signals.items():
+            signal_quantiles = []
+            for i in range(0, quantiles + 1):
+                signal_quantiles.append(signal.quantile(float(i) / quantiles, interpolation='nearest', axis=1))
+
+            for idx in range(0, len(signal_quantiles) - 1):
+                signal_quantile = signal[(signal.T > signal_quantiles[idx]).T & 
+                                         (signal.T <= signal_quantiles[idx + 1]).T]
+                signal_quantile = ~np.isnan(signal_quantile)
+                signal_forward_returns = forward_returns[signal_quantile]
+                signal_average_forward_returns = signal_forward_returns.mean()
+            
+                sharpe_ratio = signal_average_forward_returns / signal_forward_returns.std()
+                num_events = len(signal_quantile[signal_quantile == True].dropna(how='all'))
+                information_ratio = sharpe_ratio * (num_events ** 0.5)
+                specific_returns = signal_average_forward_returns - forward_average_returns
+
+#                 sharpe_ratio = pd.Series(sharpe_ratio.mean(), index=sharpe_ratio.index)
+                information_ratio = pd.Series(information_ratio.mean(), index=information_ratio.index)
+                specific_returns = pd.Series(specific_returns.mean(), index=specific_returns.index)
+                signal_average_forward_returns = pd.Series(signal_average_forward_returns.mean(), index=signal_average_forward_returns.index)
+                if idx == 0:
+                    metrics['{},period={}'.format(key, period)] = [
+                        (signal_quantiles[idx], information_ratio[-1], specific_returns[-1], signal_average_forward_returns[-1])
+                    ]
+                else:
+                    metrics['{},period={}'.format(key, period)].append(
+                        (signal_quantiles[idx], information_ratio[-1], specific_returns[-1], signal_average_forward_returns[-1])
+                    )
+                    
+    return metrics
+
+
+def print_factor_quantiles(metrics={}, tcost=0.001, periods=range(1,5), quantiles=5):
+    import matplotlib.pyplot as plt
+    
+    signals = set()
+    for key, metric_array in metrics.items():
+        param_values = [int(param.split('=')[1]) for param in key.split(',')]
+        long, short, cutoff, period = param_values
+        signals.add("short={},long={},cutoff={}".format(long, short, cutoff))
+    
+    for key in signals:
+        factor_df = pd.DataFrame(index=range(0, quantiles))
+        specific_df = pd.DataFrame(index=range(0, quantiles))
+        for period in periods:
+            quantile_metrics = []
+#             quantile_values = []
+            for metric in metrics["{},period={}".format(key, period)]:
+                quantile_value, ir, specific_returns, average_returns = metric
+                quantile_metrics.append(average_returns)
+#                 quantile_metrics.append(specific_returns)
+#                 quantile_metrics.append(ir)
+#                 print(quantile_value)
+#                 quantile_metrics.append(specific_returns)
+                
+#                 quantile_values.append(round(quantile_value, 3))
+
+            factor_df[period] = quantile_metrics
+        factor_df.plot(kind='bar', title='Signal {}'.format(key), figsize=(12, 5))
+        plt.xlabel('Quantiles', fontsize=14)
+        plt.ylabel('Average Return', fontsize=14)
+        plt.axhline(y=tcost, color='red', linestyle='--')
+        plt.axhline(y=-tcost, color='red', linestyle='--')
+        
+    return
+
+def run_factor_signal_backtest(symbols, start_year, end_year, reverse_symbols=[], quantiles=5, 
+                              resolution=Resolution.Hour, periods=range(1,60)):
+    start_dt, end_dt = datetime(start_year, 1, 1), datetime(end_year, 1, 1)
+    daily_historical_prices = qb.History(symbols, start_dt, end_dt, resolution)
+    daily_historical_prices = daily_historical_prices.loc[~daily_historical_prices.index.duplicated(keep='first')]
+    daily_historical_prices = daily_historical_prices.unstack(level=0)
+    #historical_prices = qb.History(symbols, start_dt, end_dt, Resolution.Hour)
+    #historical_prices = historical_prices.loc[~historical_prices.index.duplicated(keep='first')]
+    #historical_prices = historical_prices.unstack(level=0)
+#     historical_prices = daily_historical_prices
+    #returns = historical_prices.pct_change().dropna(how='all').close
+    #volume = historical_prices.pct_change().dropna(how='all').volume
+    data_source_df = daily_historical_prices
+    data_source_df = data_source_df.set_index(data_source_df.index.date)
+    data_source_df = data_source_df.groupby(level=0).sum() # (Oanda)
+
+#     longs = list(range(1, 10, 1))
+#     longs = list(range(5, 50, 5))
+#     longs = [20, 40, 60]
+    longs = [5, 20, 60, 200]
+    signals = generate_momo_signals(data_source_df, 
+                                      reverse_symbols=reverse_symbols,
+                                      short_length=[1], 
+                                      long_length=longs)
+
+    metrics = calculate_factor_quantiles(signals, 
+                                         daily_historical_prices,
+                                         quantiles=quantiles,
+                                         reverse_symbols=reverse_symbols,
+                                         periods=periods)
+    
+    tcost = 0.001
+    print_factor_quantiles(metrics, tcost=tcost, periods=periods, quantiles=quantiles)
+    
+    
+    
+    qb = QuantBook()
+resolution = Resolution.Daily
+
+# long only
+def base_universe_long(base='ENERGY'):
+    if base == 'ENERGY':
+        return ["VDE", "USO", "XES", "XOP", "UNG", "ICLN", "ERX", "UCO", "AMJ", "BNO", "AMLP", "UGAZ", "TAN"]
+    if base == 'METALS':
+        return ["GLD", "IAU", "SLV", "GDX", "AGQ", "PPLT", "NUGT", "USLV", "UGLD", "JNUG"]
+    if base == 'TECH':
+        return ["QQQ", "IGV", "QTEC", "FDN", "FXL", "TECL", "SOXL", "SKYY", "KWEB"]
+    if base == 'TREASURIES':
+        return ["IEF", "SHY", "TLT", "IEI", "TLH", "BIL", "SPTL", "TMF", "SCHO", "SCHR", "SPTS", "GOVT"]
+    if base == 'SPY':
+        return ["XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY"]
+    if base == 'VOL':
+        return ["SPLV", "EEMV", "EFAV", "USMV"]
+    return []
+
+def base_universe_short(base='ENERGY'):
+    if base == 'ENERGY':
+        return ["ERY", "SCO", "DGAZ"]
+    if base == 'METALS':
+        return ["DUST", "JDST"]
+    if base == 'TECH':
+        return ["TECS","SOXS"]
+    if base == 'TREASURIES':
+        return ["TBT", "TBF", "TMV"]
+    if base == 'SPY':
+        return []
+    if base == 'VOL':
+        return ["SVXY", "TVIX", "VIXY", "UVXY"]
+    return []
+
+long = True
+def base_universe(base='ENERGY', long=long):
+    if long:
+        return base_universe_long(base=base)
+    else:
+        return base_universe_short(base=base)
+    
+symbols = base_universe("ENERGY", long=long) 
+symbols += base_universe("METALS", long=long) 
+symbols += base_universe("VOL", long=long) 
+symbols += base_universe("TECH", long=long) 
+symbols += base_universe("TREASURIES", long=long) 
+symbols += base_universe("SPY", long=long) 
+for symbol in symbols:
+    qb.AddEquity(symbol, resolution)
